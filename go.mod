@@ -3,6 +3,8 @@ module github.com/Gabriel-Schiestl/qq-framework-basic-kafka
 go 1.24.4
 
 require (
+	github.com/Gabriel-Schiestl/qq-framework-basic-golang v0.0.0-20250707132453-ad1f928ede22
+	github.com/Gabriel-Schiestl/qq-framework-log-golang v0.0.0-20250707133309-34257a5f0fee
 	github.com/segmentio/kafka-go v0.4.48
 	gopkg.in/DataDog/dd-trace-go.v1 v1.74.2
 )
@@ -25,11 +27,8 @@ require (
 	github.com/DataDog/go-tuf v1.1.0-0.5.2 // indirect
 	github.com/DataDog/opentelemetry-mapping-go/pkg/otlp/attributes v0.26.0 // indirect
 	github.com/DataDog/sketches-go v1.4.7 // indirect
-	github.com/Gabriel-Schiestl/qq-framework-basic-golang v0.0.0-20250707132453-ad1f928ede22 // indirect
-	github.com/Gabriel-Schiestl/qq-framework-log-golang v0.0.0-20250707131247-1ad1de2a8a67 // indirect
 	github.com/Masterminds/semver/v3 v3.3.1 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/caarlos0/env/v6 v6.10.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cihub/seelog v0.0.0-20170130134532-f561c5e57575 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -76,8 +75,6 @@ require (
 	go.opentelemetry.io/otel/metric v1.35.0 // indirect
 	go.opentelemetry.io/otel/trace v1.35.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	go.uber.org/dig v1.19.0 // indirect
-	go.uber.org/fx v1.24.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
 	golang.org/x/crypto v0.38.0 // indirect

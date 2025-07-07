@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Gabriel-Schiestl/qq-framework-basic-golang/utils"
-	logger "github.com/Gabriel-Schiestl/qq-framework-log-golang"
+	"github.com/Gabriel-Schiestl/qq-framework-log-golang/logger"
 	kafkaGo "github.com/segmentio/kafka-go"
 	"gopkg.in/DataDog/dd-trace-go.v1/ddtrace/tracer"
 )
