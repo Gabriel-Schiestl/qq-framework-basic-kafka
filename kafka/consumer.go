@@ -36,9 +36,10 @@ type MessageResult struct {
 
 type KafkaReaderOption func(*kafkaGo.ReaderConfig)
 
-func NewKafkaConsumer(cfg IKafkaProvider, kafkaConsumerConfig *KafkaConsumerConfig, opts ...KafkaReaderOption) error {
+func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConfig *KafkaConsumerConfig, opts ...KafkaReaderOption) error {
 
-	ctx, cancel := context.WithCancel(context.Background())
+	consumerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	minBytes, err := strconv.Atoi(cfg.GetConsumerMinBytes())
 	if err != nil {
@@ -73,64 +74,110 @@ func NewKafkaConsumer(cfg IKafkaProvider, kafkaConsumerConfig *KafkaConsumerConf
 	}
 
 	var wg sync.WaitGroup
+    errChan := make(chan error, kafkaConsumerConfig.ConcurrentReaders)
 
-	for i := 0; i < kafkaConsumerConfig.ConcurrentReaders; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+    for i := 0; i < kafkaConsumerConfig.ConcurrentReaders; i++ {
+        wg.Add(1)
+        go func(readerID int) {
+            defer wg.Done()
 
-			kafkaConsumer := &KafkaConsumer{
-				reader: kafkaGo.NewReader(kafkaReaderConfig),
-			}
+            kafkaConsumer := &KafkaConsumer{
+                reader: kafkaGo.NewReader(kafkaReaderConfig),
+            }
 
-			log, _ := logger.Trace(ctx)
-			defer func() {
-				if err := kafkaConsumer.reader.Close(); err != nil {
-					log.Errorf("failed to close kafka reader: %v", err)
-				}
-			}()
+            log, _ := logger.Trace(consumerCtx)
+            defer func() {
+                if err := kafkaConsumer.reader.Close(); err != nil {
+                    log.Errorf("failed to close kafka reader %d: %v", readerID, err)
+                }
+            }()
 
-			for {
-				log, traceCtx := logger.Trace(ctx)
-				message, err := kafkaConsumer.reader.ReadMessage(traceCtx)
-				if err != nil {
-					log.Errorf("failed to read message on topic %s, partition %d: %v", kafkaConsumerConfig.Topic, message.Partition, err)
-					continue
-				}
+            for {
+                select {
+                case <-consumerCtx.Done():
+                    log.Infof("Context cancelled, stopping consumer %d for topic %s", readerID, kafkaConsumerConfig.Topic)
+                    return
+                default:
+                    readCtx, readCancel := context.WithTimeout(consumerCtx, 5*time.Second)
+                    message, err := kafkaConsumer.reader.FetchMessage(readCtx)
+                    readCancel()
+                    
+                    if err != nil {
+                        if consumerCtx.Err() != nil {
+                            log.Infof("Context cancelled while reading message on topic %s", kafkaConsumerConfig.Topic)
+                            return
+                        }
+                        log.Errorf("failed to read message on topic %s: %v", kafkaConsumerConfig.Topic, err)
+                        time.Sleep(1 * time.Second)
+                        continue
+                    }
 
-				minifiedContent, err := utils.MinifyJson(message.Value)
-				if err != nil {
-					log.Errorf("failed to minify json: %v", err)
-					continue
-				}
+                    if err := kafkaConsumer.processMessage(consumerCtx, message, kafkaConsumerConfig, serviceName); err != nil {
+                        log.Errorf("failed to process message: %v", err)
+                        continue
+                    }
 
-				messageResult := MessageResult{
-					Key:   string(message.Key),
-					Value: json.RawMessage(message.Value),
-				}
+                    if err := kafkaConsumer.reader.CommitMessages(consumerCtx, message); err != nil {
+                        log.Errorf("failed to commit message: %v", err)
+                    }
+                }
+            }
+        }(i)
+    }
 
-				log.Debugf(
-					"mensagem recebida: Tópico=%s, Partição=%d, Offset=%d, Timestamp=%s, Conteúdo=%s",
-					kafkaConsumerConfig.Topic, message.Partition, message.Offset, message.Time.Format(time.RFC3339), minifiedContent,
-				)
+    done := make(chan struct{})
+    go func() {
+        wg.Wait()
+        close(done)
+    }()
 
-				processSpan, processSpanCtx := tracer.StartSpanFromContext(traceCtx, "message.process", tracer.ResourceName(kafkaConsumerConfig.Topic), tracer.ServiceName(serviceName))
+    select {
+    case <-consumerCtx.Done():
+        logger.Get().Infof("Context cancelled, waiting for consumers to finish...")
+        wg.Wait()
+        return consumerCtx.Err()
+    case <-done:
+        return nil
+    case err := <-errChan:
+        cancel()
+        return err
+    }
+}
 
-				processSpan.SetTag("kafka.topic", kafkaConsumerConfig.Topic)
-				processSpan.SetTag("kafka.partition", message.Partition)
-				processSpan.SetTag("kafka.offset", message.Offset)
+func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Message, config *KafkaConsumerConfig, serviceName string) error {
+    log, traceCtx := logger.Trace(ctx)
+    
+    minifiedContent, err := utils.MinifyJson(message.Value)
+    if err != nil {
+        log.Errorf("failed to minify json: %v", err)
+        return err
+    }
 
-				if err := kafkaConsumerConfig.Handle(processSpanCtx, messageResult); err != nil {
-					log.Errorf("error handling message: %v", err)
-					processSpan.SetTag("error", err)
-				}
-				processSpan.Finish()
-			}
-		}()
-	}
-	wg.Wait()
-	cancel()
-	return nil
+    messageResult := MessageResult{
+        Key:   string(message.Key),
+        Value: json.RawMessage(message.Value),
+    }
+
+    log.Debugf(
+        "mensagem recebida: Tópico=%s, Partição=%d, Offset=%d, Timestamp=%s, Conteúdo=%s",
+        config.Topic, message.Partition, message.Offset, message.Time.Format(time.RFC3339), minifiedContent,
+    )
+
+    processSpan, processSpanCtx := tracer.StartSpanFromContext(traceCtx, "message.process", 
+        tracer.ResourceName(config.Topic), tracer.ServiceName(serviceName))
+    defer processSpan.Finish()
+
+    processSpan.SetTag("kafka.topic", config.Topic)
+    processSpan.SetTag("kafka.partition", message.Partition)
+    processSpan.SetTag("kafka.offset", message.Offset)
+
+    if err := config.Handle(processSpanCtx, messageResult); err != nil {
+        log.Errorf("error handling message: %v", err)
+        processSpan.SetTag("error", err)
+        return err
+    }
+
+    return nil
 }
 
 func WithGroupID(groupID string) KafkaReaderOption {
