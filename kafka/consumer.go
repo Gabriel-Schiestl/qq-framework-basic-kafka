@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -25,10 +24,14 @@ type KafkaConsumer struct {
 
 type KafkaConsumerConfig struct {
 	Topic             string
-	MessageDto        reflect.Type
-	Handle            func(ctx context.Context, dto interface{}) error
+	Handle            func(ctx context.Context, dto MessageResult) error
 	ConcurrentReaders int
 	ServiceName       string
+}
+
+type MessageResult struct {
+	Key   string      `json:"key"`
+    Value json.RawMessage `json:"value"`
 }
 
 type KafkaReaderOption func(*kafkaGo.ReaderConfig)
@@ -96,16 +99,14 @@ func NewKafkaConsumer(cfg IKafkaProvider, kafkaConsumerConfig *KafkaConsumerConf
 				}
 
 				minifiedContent, err := utils.MinifyJson(message.Value)
-
 				if err != nil {
 					log.Errorf("failed to minify json: %v", err)
 					continue
 				}
 
-				dtoInstance := reflect.New(kafkaConsumerConfig.MessageDto).Interface()
-				if err := json.Unmarshal(message.Value, dtoInstance); err != nil {
-					log.Errorf("failed to unmarshal message: %v", err)
-					continue
+				messageResult := MessageResult{
+					Key:   string(message.Key),
+					Value: json.RawMessage(message.Value),
 				}
 
 				log.Debugf(
@@ -119,7 +120,7 @@ func NewKafkaConsumer(cfg IKafkaProvider, kafkaConsumerConfig *KafkaConsumerConf
 				processSpan.SetTag("kafka.partition", message.Partition)
 				processSpan.SetTag("kafka.offset", message.Offset)
 
-				if err := kafkaConsumerConfig.Handle(processSpanCtx, dtoInstance); err != nil {
+				if err := kafkaConsumerConfig.Handle(processSpanCtx, messageResult); err != nil {
 					log.Errorf("error handling message: %v", err)
 					processSpan.SetTag("error", err)
 				}
