@@ -170,6 +170,7 @@ func cleanMessage(data []byte) []byte {
 
 func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Message, config *KafkaConsumerConfig, serviceName string) error {
     log, traceCtx := logger.Trace(ctx)
+    fmt.Println("Received message:", message)
     fmt.Println("Processing message:", string(message.Value))
     fmt.Printf("Message bytes: %v\n", message.Value)
     
