@@ -148,12 +148,17 @@ func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConf
 func cleanMessage(data []byte) []byte {
     result := make([]byte, 0, len(data))
     for i, b := range data {
-        // Log bytes problemáticos para debug
+        // Remover caracteres de controle e não-ASCII
         if b < 32 || b > 126 {
             if b != '\t' && b != '\n' && b != '\r' {
                 fmt.Printf("Removing byte at position %d: %d (0x%02x) '%c'\n", i, b, b, b)
                 continue
             }
+        }
+        // Remover caracteres específicos que causam problemas no JSON
+        if b == 96 { // backtick (`)
+            fmt.Printf("Removing backtick at position %d: %d (0x%02x) '%c'\n", i, b, b, b)
+            continue
         }
         result = append(result, b)
     }
