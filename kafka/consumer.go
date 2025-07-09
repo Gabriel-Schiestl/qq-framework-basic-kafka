@@ -1,7 +1,6 @@
 package kafka
 
 import (
-	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -147,21 +146,40 @@ func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConf
     }
 }
 
+// isAvroMessage verifica se a mensagem está em formato Avro
 func isAvroMessage(data []byte) bool {
     if len(data) < 5 {
         return false
     }
+    // Magic byte do Confluent Schema Registry é 0x00
     return data[0] == 0x00
 }
 
+// extractSchemaID extrai o schema ID do header Avro
 func extractSchemaID(data []byte) (int32, error) {
     if len(data) < 5 {
         return 0, fmt.Errorf("insufficient data for schema ID")
     }
+    // Schema ID está nos bytes 1-4
     schemaID := binary.BigEndian.Uint32(data[1:5])
     return int32(schemaID), nil
 }
 
+// cleanAvroPayload remove bytes não-ASCII e de controle do payload Avro
+func cleanAvroPayload(payload []byte) string {
+    var result []byte
+    
+    for _, b := range payload {
+        // Manter apenas caracteres ASCII printáveis (32-126)
+        if b >= 32 && b <= 126 {
+            result = append(result, b)
+        }
+    }
+    
+    return string(result)
+}
+
+// processAvroMessage processa mensagens em formato Avro
 func (kc *KafkaConsumer) processAvroMessage(data []byte, key []byte, log *logger.Event) ([]byte, error) {
     schemaID, err := extractSchemaID(data)
     if err != nil {
@@ -170,8 +188,10 @@ func (kc *KafkaConsumer) processAvroMessage(data []byte, key []byte, log *logger
     
     log.Infof("Detected Avro message with schema ID: %d", schemaID)
     
+    // Pular os primeiros 5 bytes (magic + schema ID)
     payload := data[5:]
     
+    // Tentar encontrar JSON válido no payload
     for i := 0; i < len(payload); i++ {
         if payload[i] == '{' {
             potentialJSON := payload[i:]
@@ -182,8 +202,11 @@ func (kc *KafkaConsumer) processAvroMessage(data []byte, key []byte, log *logger
         }
     }
     
-    cleanedPayload := bytes.Trim(payload, "\x00")
+    // Se não encontrar JSON válido, limpar o payload e reconstruir
+    cleanedDescription := cleanAvroPayload(payload)
+    log.Debugf("Cleaned description from Avro payload: %s", cleanedDescription)
     
+    // Tentar converter SKU da key para número
     var skuValue interface{} = string(key)
     if skuNum, err := strconv.Atoi(string(key)); err == nil {
         skuValue = skuNum
@@ -191,7 +214,7 @@ func (kc *KafkaConsumer) processAvroMessage(data []byte, key []byte, log *logger
     
     reconstructedJSON := map[string]interface{}{
         "sku":       skuValue,
-        "descricao": string(cleanedPayload),
+        "descricao": cleanedDescription,
     }
     
     reconstructedBytes, err := json.Marshal(reconstructedJSON)
@@ -209,6 +232,7 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
     var finalJSON []byte
     var err error
     
+    // Verificar se é mensagem Avro
     if isAvroMessage(message.Value) {
         finalJSON, err = kc.processAvroMessage(message.Value, message.Key, log)
         if err != nil {
@@ -225,6 +249,7 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
         }
     }
     
+    // Verificar se o JSON final é válido
     if !json.Valid(finalJSON) {
         log.Errorf("final JSON is not valid: %s", string(finalJSON))
         return fmt.Errorf("final JSON is not valid")
