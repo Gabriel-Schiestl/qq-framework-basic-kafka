@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/Gabriel-Schiestl/qq-framework-basic-golang/utils"
 	"github.com/Gabriel-Schiestl/qq-framework-log-golang/logger"
@@ -185,12 +184,10 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
 }
 
 func cleanMessage(data []byte) []byte {
-    // Remove null bytes e caracteres de controle
     result := make([]byte, 0, len(data))
     for _, b := range data {
-        r := rune(b)
-        // Manter apenas caracteres printáveis, espaços, tabs e quebras de linha
-        if unicode.IsPrint(r) || r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+        // Manter apenas caracteres ASCII válidos para JSON
+        if b >= 32 && b <= 126 || b == '\t' || b == '\n' || b == '\r' {
             result = append(result, b)
         }
     }
