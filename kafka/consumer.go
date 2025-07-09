@@ -145,10 +145,35 @@ func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConf
     }
 }
 
+func cleanMessage(data []byte) []byte {
+    result := make([]byte, 0, len(data))
+    for i, b := range data {
+        // Log bytes problemáticos para debug
+        if b < 32 || b > 126 {
+            if b != '\t' && b != '\n' && b != '\r' {
+                fmt.Printf("Removing byte at position %d: %d (0x%02x) '%c'\n", i, b, b, b)
+                continue
+            }
+        }
+        result = append(result, b)
+    }
+    return result
+}
+
 func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Message, config *KafkaConsumerConfig, serviceName string) error {
     log, traceCtx := logger.Trace(ctx)
     fmt.Println("Processing message:", string(message.Value))
+    fmt.Printf("Message bytes: %v\n", message.Value)
+    
     cleanedValue := cleanMessage(message.Value)
+    fmt.Println("Cleaned message:", string(cleanedValue))
+    fmt.Printf("Cleaned bytes: %v\n", cleanedValue)
+    
+    // Verificar se é JSON válido
+    if !json.Valid(cleanedValue) {
+        log.Errorf("message is not valid JSON after cleaning: %s", string(cleanedValue))
+        return fmt.Errorf("invalid JSON format after cleaning")
+    }
     
     minifiedContent, err := utils.MinifyJson(cleanedValue)
     if err != nil {
@@ -181,17 +206,6 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
     }
 
     return nil
-}
-
-func cleanMessage(data []byte) []byte {
-    result := make([]byte, 0, len(data))
-    for _, b := range data {
-        // Manter apenas caracteres ASCII válidos para JSON
-        if b >= 32 && b <= 126 || b == '\t' || b == '\n' || b == '\r' {
-            result = append(result, b)
-        }
-    }
-    return result
 }
 
 func WithGroupID(groupID string) KafkaReaderOption {
