@@ -1,8 +1,10 @@
 package kafka
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -146,8 +148,10 @@ func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConf
 
 func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Message, config *KafkaConsumerConfig, serviceName string) error {
     log, traceCtx := logger.Trace(ctx)
+    fmt.Println("Processing message:", string(message.Value))
+    cleanedValue := bytes.ReplaceAll(message.Value, []byte{0}, []byte{})
     
-    minifiedContent, err := utils.MinifyJson(message.Value)
+    minifiedContent, err := utils.MinifyJson(cleanedValue)
     if err != nil {
         log.Errorf("failed to minify json: %v", err)
         return err
@@ -155,7 +159,7 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
 
     messageResult := MessageResult{
         Key:   string(message.Key),
-        Value: json.RawMessage(message.Value),
+        Value: json.RawMessage(cleanedValue),
     }
 
     log.Debugf(
