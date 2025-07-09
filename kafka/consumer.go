@@ -100,7 +100,11 @@ func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConf
                     return
                 default:
                     readCtx, readCancel := context.WithTimeout(consumerCtx, 5*time.Second)
-                    message, err := kafkaConsumer.reader.FetchMessage(readCtx)
+                    message, err := kafkaConsumer.reader.ReadMessage(readCtx)
+				if err != nil {
+					log.Errorf("failed to read message on topic %s, partition %d: %v", kafkaConsumerConfig.Topic, message.Partition, err)
+					continue
+				}
                     readCancel()
                     
                     if err != nil {
