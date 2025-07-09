@@ -170,7 +170,12 @@ func cleanAvroPayload(payload []byte) string {
     var result []byte
     
     for _, b := range payload {
-        // Manter apenas caracteres ASCII printáveis (32-126)
+        // Pular caracteres de controle específicos que aparecem no header Avro
+        if b < 32 || b == 96 { // 96 é o backtick `
+            continue
+        }
+        
+        // Manter apenas caracteres ASCII printáveis válidos
         if b >= 32 && b <= 126 {
             result = append(result, b)
         }
