@@ -175,15 +175,25 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
     fmt.Printf("Cleaned bytes: %v\n", cleanedValue)
     
     // Verificar se é JSON válido após limpeza
-    if !json.Valid(cleanedValue) {
-        log.Errorf("message is not valid JSON after cleaning: %s", string(cleanedValue))
-        return fmt.Errorf("invalid JSON format after cleaning")
-    }
-    
-    // Usar o JSON limpo diretamente
-    messageResult := MessageResult{
-        Key:   string(message.Key),
-        Value: json.RawMessage(cleanedValue),
+    var messageResult MessageResult
+    if json.Valid(cleanedValue) {
+        // Se for JSON válido, usar diretamente
+        messageResult = MessageResult{
+            Key:   string(message.Key),
+            Value: json.RawMessage(cleanedValue),
+        }
+    } else {
+        // Se não for JSON válido, converter a string para JSON
+        jsonString, err := json.Marshal(string(cleanedValue))
+        if err != nil {
+            log.Errorf("failed to marshal string to JSON: %v", err)
+            return err
+        }
+        messageResult = MessageResult{
+            Key:   string(message.Key),
+            Value: json.RawMessage(jsonString),
+        }
+        fmt.Printf("Converted string to JSON: %s\n", string(jsonString))
     }
     
     minifiedContent, err := utils.MinifyJson(cleanedValue)
