@@ -2,7 +2,9 @@ package kafka
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"sync"
@@ -15,22 +17,22 @@ import (
 )
 
 type KafkaMessage struct {
-	Message *kafkaGo.Message
+    Message *kafkaGo.Message
 }
 
 type KafkaConsumer struct {
-	reader *kafkaGo.Reader
+    reader *kafkaGo.Reader
 }
 
 type KafkaConsumerConfig struct {
-	Topic             string
-	Handle            func(ctx context.Context, dto MessageResult) error
-	ConcurrentReaders int
-	ServiceName       string
+    Topic             string
+    Handle            func(ctx context.Context, dto MessageResult) error
+    ConcurrentReaders int
+    ServiceName       string
 }
 
 type MessageResult struct {
-	Key   string      `json:"key"`
+    Key   string      `json:"key"`
     Value json.RawMessage `json:"value"`
 }
 
@@ -38,42 +40,42 @@ type KafkaReaderOption func(*kafkaGo.ReaderConfig)
 
 func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConfig *KafkaConsumerConfig, opts ...KafkaReaderOption) error {
 
-	consumerCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+    consumerCtx, cancel := context.WithCancel(ctx)
+    defer cancel()
 
-	minBytes, err := strconv.Atoi(cfg.GetConsumerMinBytes())
-	if err != nil {
-		minBytes = 10e3
-	}
+    minBytes, err := strconv.Atoi(cfg.GetConsumerMinBytes())
+    if err != nil {
+        minBytes = 10e3
+    }
 
-	maxBytes, err := strconv.Atoi(cfg.GetConsumerMaxBytes())
-	if err != nil {
-		maxBytes = 10e6
-	}
+    maxBytes, err := strconv.Atoi(cfg.GetConsumerMaxBytes())
+    if err != nil {
+        maxBytes = 10e6
+    }
 
-	serviceName := kafkaConsumerConfig.ServiceName
+    serviceName := kafkaConsumerConfig.ServiceName
     if serviceName == "" {
         serviceName = os.Getenv("APP_NAME") + "-kafka"
     }
 
-	kafkaReaderConfig := kafkaGo.ReaderConfig{
-		Brokers:           cfg.GetBrokers(),
-		GroupID:           cfg.GetGroupID(),
-		Topic:             kafkaConsumerConfig.Topic,
-		MinBytes:          minBytes, // 10KB
-		MaxBytes:          maxBytes, // 10MB
-		HeartbeatInterval: time.Duration(cfg.GetHeartbeatInterval()) * time.Second,
-		SessionTimeout:    time.Duration(cfg.GetHeartbeatInterval()*cfg.GetSessionTimeoutMultiplier()) * time.Second,
-		CommitInterval:    time.Duration(cfg.GetCommitInterval()) * time.Second,
-		StartOffset:       kafkaGo.FirstOffset,
-		ErrorLogger:       kafkaGo.LoggerFunc(logger.Get().Errorf),
-	}
+    kafkaReaderConfig := kafkaGo.ReaderConfig{
+        Brokers:           cfg.GetBrokers(),
+        GroupID:           cfg.GetGroupID(),
+        Topic:             kafkaConsumerConfig.Topic,
+        MinBytes:          minBytes, // 10KB
+        MaxBytes:          maxBytes, // 10MB
+        HeartbeatInterval: time.Duration(cfg.GetHeartbeatInterval()) * time.Second,
+        SessionTimeout:    time.Duration(cfg.GetHeartbeatInterval()*cfg.GetSessionTimeoutMultiplier()) * time.Second,
+        CommitInterval:    time.Duration(cfg.GetCommitInterval()) * time.Second,
+        StartOffset:       kafkaGo.FirstOffset,
+        ErrorLogger:       kafkaGo.LoggerFunc(logger.Get().Errorf),
+    }
 
-	for _, opt := range opts {
-		opt(&kafkaReaderConfig)
-	}
+    for _, opt := range opts {
+        opt(&kafkaReaderConfig)
+    }
 
-	var wg sync.WaitGroup
+    var wg sync.WaitGroup
     errChan := make(chan error, kafkaConsumerConfig.ConcurrentReaders)
 
     for i := 0; i < kafkaConsumerConfig.ConcurrentReaders; i++ {
@@ -144,18 +146,114 @@ func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConf
     }
 }
 
+func isAvroMessage(data []byte) bool {
+    if len(data) < 5 {
+        return false
+    }
+    return data[0] == 0x00
+}
+
+func extractSchemaID(data []byte) (int32, error) {
+    if len(data) < 5 {
+        return 0, fmt.Errorf("insufficient data for schema ID")
+    }
+    schemaID := binary.BigEndian.Uint32(data[1:5])
+    return int32(schemaID), nil
+}
+
+func cleanAvroPayload(payload []byte) string {
+    var result []byte
+    
+    for _, b := range payload {
+        if b < 32 || b == 96 {
+            continue
+        }
+        
+        if b >= 32 && b <= 126 {
+            result = append(result, b)
+        }
+    }
+    
+    return string(result)
+}
+
+func (kc *KafkaConsumer) processAvroMessage(data []byte, key []byte, log *logger.Event) ([]byte, error) {
+    schemaID, err := extractSchemaID(data)
+    if err != nil {
+        return nil, fmt.Errorf("failed to extract schema ID: %v", err)
+    }
+    
+    log.Infof("Detected Avro message with schema ID: %d", schemaID)
+    
+    payload := data[5:]
+    
+    for i := 0; i < len(payload); i++ {
+        if payload[i] == '{' {
+            potentialJSON := payload[i:]
+            if json.Valid(potentialJSON) {
+                log.Debugf("Extracted JSON from Avro: %s", string(potentialJSON))
+                return potentialJSON, nil
+            }
+        }
+    }
+    
+    cleanedDescription := cleanAvroPayload(payload)
+    log.Debugf("Cleaned description from Avro payload: %s", cleanedDescription)
+    
+    var skuValue interface{} = string(key)
+    if skuNum, err := strconv.Atoi(string(key)); err == nil {
+        skuValue = skuNum
+    }
+    
+    reconstructedJSON := map[string]interface{}{
+        "sku":       skuValue,
+        "descricao": cleanedDescription,
+    }
+    
+    reconstructedBytes, err := json.Marshal(reconstructedJSON)
+    if err != nil {
+        return nil, fmt.Errorf("failed to reconstruct JSON: %v", err)
+    }
+    
+    log.Debugf("Reconstructed JSON from Avro: %s", string(reconstructedBytes))
+    return reconstructedBytes, nil
+}
+
 func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Message, config *KafkaConsumerConfig, serviceName string) error {
     log, traceCtx := logger.Trace(ctx)
     
-    minifiedContent, err := utils.MinifyJson(message.Value)
+    var finalJSON []byte
+    var err error
+    
+    if isAvroMessage(message.Value) {
+        finalJSON, err = kc.processAvroMessage(message.Value, message.Key, log)
+        if err != nil {
+            log.Errorf("failed to process Avro message: %v", err)
+            return err
+        }
+    } else {
+        if json.Valid(message.Value) {
+            finalJSON = message.Value
+        } else {
+            log.Errorf("message is not valid JSON and not Avro format")
+            return fmt.Errorf("message is not valid JSON and not Avro format")
+        }
+    }
+    
+    if !json.Valid(finalJSON) {
+        log.Errorf("final JSON is not valid: %s", string(finalJSON))
+        return fmt.Errorf("final JSON is not valid")
+    }
+    
+    messageResult := MessageResult{
+        Key:   string(message.Key),
+        Value: json.RawMessage(finalJSON),
+    }
+    
+    minifiedContent, err := utils.MinifyJson(finalJSON)
     if err != nil {
         log.Errorf("failed to minify json: %v", err)
         return err
-    }
-
-    messageResult := MessageResult{
-        Key:   string(message.Key),
-        Value: json.RawMessage(message.Value),
     }
 
     log.Debugf(
@@ -181,31 +279,31 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
 }
 
 func WithGroupID(groupID string) KafkaReaderOption {
-	return func(readerConfig *kafkaGo.ReaderConfig) {
-		readerConfig.GroupID = groupID
-	}
+    return func(readerConfig *kafkaGo.ReaderConfig) {
+        readerConfig.GroupID = groupID
+    }
 }
 
 func WithBrokers(brokers []string) KafkaReaderOption {
-	return func(readerConfig *kafkaGo.ReaderConfig) {
-		readerConfig.Brokers = brokers
-	}
+    return func(readerConfig *kafkaGo.ReaderConfig) {
+        readerConfig.Brokers = brokers
+    }
 }
 
 func WithHeartbeatInterval(heartbeatInterval int) KafkaReaderOption {
-	return func(readerConfig *kafkaGo.ReaderConfig) {
-		readerConfig.HeartbeatInterval = time.Duration(heartbeatInterval) * time.Second
-	}
+    return func(readerConfig *kafkaGo.ReaderConfig) {
+        readerConfig.HeartbeatInterval = time.Duration(heartbeatInterval) * time.Second
+    }
 }
 
 func WithSessionTimeoutMultiplier(sessionTimeoutMultiplier int) KafkaReaderOption {
-	return func(readerConfig *kafkaGo.ReaderConfig) {
-		readerConfig.SessionTimeout = time.Duration(int(readerConfig.HeartbeatInterval.Seconds())*sessionTimeoutMultiplier) * time.Second
-	}
+    return func(readerConfig *kafkaGo.ReaderConfig) {
+        readerConfig.SessionTimeout = time.Duration(int(readerConfig.HeartbeatInterval.Seconds())*sessionTimeoutMultiplier) * time.Second
+    }
 }
 
 func WithCommitInterval(commitInterval int) KafkaReaderOption {
-	return func(readerConfig *kafkaGo.ReaderConfig) {
-		readerConfig.CommitInterval = time.Duration(commitInterval) * time.Second
-	}
+    return func(readerConfig *kafkaGo.ReaderConfig) {
+        readerConfig.CommitInterval = time.Duration(commitInterval) * time.Second
+    }
 }
