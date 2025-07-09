@@ -99,13 +99,12 @@ func NewKafkaConsumer(ctx context.Context, cfg IKafkaProvider, kafkaConsumerConf
                     log.Infof("Context cancelled, stopping consumer %d for topic %s", readerID, kafkaConsumerConfig.Topic)
                     return
                 default:
-                    readCtx, readCancel := context.WithTimeout(consumerCtx, 5*time.Second)
-                    message, err := kafkaConsumer.reader.ReadMessage(readCtx)
-				if err != nil {
-					log.Errorf("failed to read message on topic %s, partition %d: %v", kafkaConsumerConfig.Topic, message.Partition, err)
-					continue
-				}
-                    readCancel()
+                    log, traceCtx := logger.Trace(ctx)
+				    message, err := kafkaConsumer.reader.ReadMessage(traceCtx)
+				    if err != nil {
+					    log.Errorf("failed to read message on topic %s, partition %d: %v", kafkaConsumerConfig.Topic, message.Partition, err)
+					    continue
+				    }
                     
                     if err != nil {
                         if consumerCtx.Err() != nil {
@@ -179,13 +178,11 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
     fmt.Printf("Cleaned bytes: %v\n", cleanedValue)
     
     // Verificar se é JSON válido após limpeza
-    var messageResult MessageResult
+    var finalJSON []byte
     if json.Valid(cleanedValue) {
         // Se for JSON válido, usar diretamente
-        messageResult = MessageResult{
-            Key:   string(message.Key),
-            Value: json.RawMessage(cleanedValue),
-        }
+        finalJSON = cleanedValue
+        fmt.Println("Message is valid JSON, using directly")
     } else {
         // Se não for JSON válido, converter a string para JSON
         jsonString, err := json.Marshal(string(cleanedValue))
@@ -193,14 +190,22 @@ func (kc *KafkaConsumer) processMessage(ctx context.Context, message kafkaGo.Mes
             log.Errorf("failed to marshal string to JSON: %v", err)
             return err
         }
-        messageResult = MessageResult{
-            Key:   string(message.Key),
-            Value: json.RawMessage(jsonString),
-        }
+        finalJSON = jsonString
         fmt.Printf("Converted string to JSON: %s\n", string(jsonString))
     }
     
-    minifiedContent, err := utils.MinifyJson(cleanedValue)
+    // Verificar se o JSON final é válido antes de continuar
+    if !json.Valid(finalJSON) {
+        log.Errorf("final JSON is not valid: %s", string(finalJSON))
+        return fmt.Errorf("final JSON is not valid")
+    }
+    
+    messageResult := MessageResult{
+        Key:   string(message.Key),
+        Value: json.RawMessage(finalJSON),
+    }
+    
+    minifiedContent, err := utils.MinifyJson(finalJSON)
     if err != nil {
         log.Errorf("failed to minify json: %v", err)
         return err
